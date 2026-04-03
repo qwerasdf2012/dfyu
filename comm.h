@@ -8,7 +8,6 @@ typedef struct _COPY_MEMORY {
     uintptr_t addr;
     void* buffer;
     size_t size;
-    uintptr_t hook;
 } COPY_MEMORY, *PCOPY_MEMORY;
 
 typedef struct _MODULE_BASE {
@@ -18,11 +17,9 @@ typedef struct _MODULE_BASE {
 } MODULE_BASE, *PMODULE_BASE;
 
 enum OPERATIONS {
-    OP_INIT_KEY = 0x100,
-    OP_READ_MEM = 0x101,
-    OP_WRITE_MEM = 0x102,
-    OP_MODULE_BASE = 0x103,
-    OP_HOOK=0x804,
+    OP_READ_MEM = 0x801,
+    OP_WRITE_MEM = 0x802,
+    OP_MODULE_BASE = 0x803,
 };
 
 char* get_rand_str(void)
