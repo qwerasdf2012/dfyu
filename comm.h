@@ -15,11 +15,12 @@ typedef struct _MODULE_BASE {
     char* name;
     uintptr_t base;
 } MODULE_BASE, *PMODULE_BASE;
-
 enum OPERATIONS {
     OP_READ_MEM = 0x801,
     OP_WRITE_MEM = 0x802,
     OP_MODULE_BASE = 0x803,
+    OP_ADD =0X805,
+    OP_REMOVE=0x806,
 };
 
 char* get_rand_str(void)

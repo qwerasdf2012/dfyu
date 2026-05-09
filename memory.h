@@ -14,6 +14,82 @@
 #include <asm/page.h>
 #include <asm/pgtable.h>
 
+#include <linux/module.h>
+#include <linux/kernel.h>
+#include <linux/notifier.h>
+#include <asm/ptrace.h>
+
+
+static struct notifier_block bp_notifier;
+
+static int bp_handler(struct pt_regs *regs)
+{
+static COPY_MEMORY cm;
+    uint64_t pc = regs->pc;
+
+    // 只处理我们的断点
+if (pc != cm.addr)
+        return 0;
+    // 1. 打印命中日志（证明断点触发了）
+    pr_info("[SAFE-BP] 命中成功！PC=0x%llx\n", pc);
+
+    // 2. 修复 PC，跳过这条指令，防止死循环
+    regs->pc += 4;
+
+    // 3. 不再重新写断点寄存器，也不清零！4.x 内核这么做会崩溃
+
+    return 1;
+}
+
+static int die_notify(struct notifier_block *nb, unsigned long action, void *data)
+{
+    struct pt_regs *regs = (struct pt_regs *)data;
+
+    if (bp_handler(regs)) {
+        // 关键：告诉内核“异常已处理，不要panic”
+        return NOTIFY_STOP;
+    }
+
+    return NOTIFY_DONE;
+}
+
+static inline void set_bp(uint64_t addrn)
+{
+    uint64_t addr = addrn;
+    __asm__ volatile (
+        "msr DBGBVR0_EL1, %0\n"
+        "mov x1, #1\n"
+        "orr x1, x1, #(1 << 9)\n" // EL0 用户态
+        "msr DBGBCR0_EL1, x1\n"
+        :: "r"(addr) : "x1"
+    );
+}
+
+static inline void clear_bp(void)
+{
+    uint64_t zero = 0;
+    __asm__ volatile (
+        "msr DBGBVR0_EL1, %0\n"
+        "msr DBGBCR0_EL1, %0\n"
+        :: "r"(zero)
+    );
+}
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 #if(LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 61))
 phys_addr_t translate_linear_address(struct mm_struct* mm, uintptr_t va) {
 
