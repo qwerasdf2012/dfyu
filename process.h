@@ -95,14 +95,3 @@ uintptr_t get_module_base(pid_t pid, const char *name)
     return count;
 }
 #endif
-
-pid_t get_process_pid(char *comm)
-{
-	struct task_struct *task;
-	for_each_process(task) {
-		if (task->comm == comm) {
-			return task->pid;
-		}
-	}
-	return 0;
-}

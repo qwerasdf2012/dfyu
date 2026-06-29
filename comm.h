@@ -15,12 +15,12 @@ typedef struct _MODULE_BASE {
     char* name;
     uintptr_t base;
 } MODULE_BASE, *PMODULE_BASE;
+
 enum OPERATIONS {
+    OP_INIT_KEY = 0x800,
     OP_READ_MEM = 0x801,
     OP_WRITE_MEM = 0x802,
     OP_MODULE_BASE = 0x803,
-    OP_ADD =0X805,
-    OP_REMOVE=0x806,
 };
 
 char* get_rand_str(void)
@@ -41,5 +41,5 @@ char* get_rand_str(void)
 	return string;
 }
 
-int dispatch_open(struct inode *node, struct file *file);
-int dispatch_close(struct inode *node, struct file *file);
+static int dispatch_open(struct inode *node, struct file *file);
+static int dispatch_close(struct inode *node, struct file *file);

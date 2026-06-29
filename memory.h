@@ -1,284 +1,217 @@
 #include <linux/sched.h>
-#include <linux/tty.h>
-#include <linux/io.h>
 #include <linux/mm.h>
 #include <linux/slab.h>
 #include <linux/uaccess.h>
 #include <linux/version.h>
-#include <asm/cacheflush.h>
+#include <linux/highmem.h>
+#include <linux/io.h>
+#include <asm/pgtable.h>
+#include <asm/io.h>
+#include <asm/processor.h>
 #if(LINUX_VERSION_CODE >= KERNEL_VERSION(4,14,83))
 #include <linux/sched/mm.h>
 #endif
-#include <asm/cpu.h>
-#include <asm/io.h>
-#include <asm/page.h>
-#include <asm/pgtable.h>
 
-#include <linux/module.h>
-#include <linux/kernel.h>
-#include <linux/notifier.h>
-#include <asm/ptrace.h>
+/*
+ * 最底层：直接通过 CR3 读取物理内存
+ * 不依赖任何内核函数，纯硬件级别操作
+ */
 
-
-static struct notifier_block bp_notifier;
-
-static int bp_handler(struct pt_regs *regs)
+/* 获取 CR3 寄存器值（页表基地址） */
+static inline unsigned long read_cr3(void)
 {
-static COPY_MEMORY cm;
-    uint64_t pc = regs->pc;
-
-    // 只处理我们的断点
-if (pc != cm.addr)
-        return 0;
-    // 1. 打印命中日志（证明断点触发了）
-    pr_info("[SAFE-BP] 命中成功！PC=0x%llx\n", pc);
-
-    // 2. 修复 PC，跳过这条指令，防止死循环
-    regs->pc += 4;
-
-    // 3. 不再重新写断点寄存器，也不清零！4.x 内核这么做会崩溃
-
-    return 1;
+	unsigned long cr3;
+	asm volatile("mov %%cr3, %0" : "=r"(cr3));
+	return cr3;
 }
 
-static int die_notify(struct notifier_block *nb, unsigned long action, void *data)
+/* 直接通过物理地址读取内存（MMIO 方式） */
+static void* direct_phys_read(phys_addr_t pa)
 {
-    struct pt_regs *regs = (struct pt_regs *)data;
-
-    if (bp_handler(regs)) {
-        // 关键：告诉内核“异常已处理，不要panic”
-        return NOTIFY_STOP;
-    }
-
-    return NOTIFY_DONE;
-}
-
-static inline void set_bp(uint64_t addrn)
-{
-    uint64_t addr = addrn;
-    __asm__ volatile (
-        "msr DBGBVR0_EL1, %0\n"
-        "mov x1, #1\n"
-        "orr x1, x1, #(1 << 9)\n" // EL0 用户态
-        "msr DBGBCR0_EL1, x1\n"
-        :: "r"(addr) : "x1"
-    );
-}
-
-static inline void clear_bp(void)
-{
-    uint64_t zero = 0;
-    __asm__ volatile (
-        "msr DBGBVR0_EL1, %0\n"
-        "msr DBGBCR0_EL1, %0\n"
-        :: "r"(zero)
-    );
-}
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-#if(LINUX_VERSION_CODE >= KERNEL_VERSION(5, 4, 61))
-phys_addr_t translate_linear_address(struct mm_struct* mm, uintptr_t va) {
-
-	pgd_t *pgd;
-	p4d_t *p4d;
-	pmd_t *pmd;
-	pte_t *pte;
-	pud_t *pud;
-
-	phys_addr_t page_addr;
-	uintptr_t page_offset;
-
-	pgd = pgd_offset(mm, va);
-	if(pgd_none(*pgd) || pgd_bad(*pgd)) {
-		return 0;
-	}
-	p4d = p4d_offset(pgd, va);
-	if (p4d_none(*p4d) || p4d_bad(*p4d)) {
-		return 0;
-	}
-	pud = pud_offset(p4d,va);
-	if(pud_none(*pud) || pud_bad(*pud)) {
-		return 0;
-	}
-	pmd = pmd_offset(pud,va);
-	if(pmd_none(*pmd)) {
-		return 0;
-	}
-	pte = pte_offset_kernel(pmd,va);
-	if(pte_none(*pte)) {
-		return 0;
-	}
-	if(!pte_present(*pte)) {
-		return 0;
-	}
-	//页物理地址
-	page_addr = (phys_addr_t)(pte_pfn(*pte) << PAGE_SHIFT);
-	//页内偏移
-	page_offset = va & (PAGE_SIZE-1);
-
-	return page_addr + page_offset;
-}
-#else
-phys_addr_t translate_linear_address(struct mm_struct* mm, uintptr_t va) {
-
-	pgd_t *pgd;
-	pmd_t *pmd;
-	pte_t *pte;
-	pud_t *pud;
-
-	phys_addr_t page_addr;
-	uintptr_t page_offset;
-
-	pgd = pgd_offset(mm, va);
-	if(pgd_none(*pgd) || pgd_bad(*pgd)) {
-		return 0;
-	}
-	pud = pud_offset(pgd,va);
-	if(pud_none(*pud) || pud_bad(*pud)) {
-		return 0;
-	}
-	pmd = pmd_offset(pud,va);
-	if(pmd_none(*pmd)) {
-		return 0;
-	}
-	pte = pte_offset_kernel(pmd,va);
-	if(pte_none(*pte)) {
-		return 0;
-	}
-	if(!pte_present(*pte)) {
-		return 0;
-	}
-	//页物理地址
-	page_addr = (phys_addr_t)(pte_pfn(*pte) << PAGE_SHIFT);
-	//页内偏移
-	page_offset = va & (PAGE_SIZE-1);
-
-	return page_addr + page_offset;
-}
-#endif
-
-#ifdef ARCH_HAS_VALID_PHYS_ADDR_RANGE
-#define my_valid_phys_addr_range(addr, count) (addr + count <= __pa(high_memory))
-#else
-#define my_valid_phys_addr_range(addr, count) true
-#endif
-
-
-bool write_physical_address(phys_addr_t pa, void* buffer, size_t size) {
 	void* mapped;
-
-	if (!pfn_valid(__phys_to_pfn(pa))) {
-		return false;
-	}
-	if (!my_valid_phys_addr_range(pa, size)) {
-		return false;
-	}
-	mapped =  ioremap_cache(pa, size);
-	if (!mapped) {
-		return false;
-	}
-	if(copy_from_user(mapped, buffer, size)) {
-		iounmap(mapped);
-		return false;
-	}
-	iounmap(mapped);
-	return true;
-}
-
-size_t read_physical_address(phys_addr_t pa, void *buffer, size_t size)
-{
-  void* mapped;
-if (!pfn_valid(__phys_to_pfn(pa))) {
-		return false;
-	}
-	if (!my_valid_phys_addr_range(pa, size)) {
-		return false;
-	}
+	struct vm_struct *vm;
+	/* 检查物理地址是否有效 */
+	if (!pfn_valid(__phys_to_pfn(pa)))
+		return NULL;
 	
-	mapped = ioremap_cache(pa, size);
-	if (!mapped) {
-		return 0;
-	}
-flush_cache_range(NULL, (unsigned long)mapped, (unsigned long)mapped + size);
-	if(copy_to_user(buffer, mapped, size)) {
-		iounmap(mapped);
-		return 0;
-	}
-	iounmap(mapped);
-	return size;
+	/* 使用 ioremap_nocache 直接映射物理内存 */
+	mapped = ioremap_cache(pa, PAGE_SIZE);
+	/* 找到对应的 vm_struct */
+	
+	return mapped;
 }
 
-size_t read_process_memory(pid_t pid, uintptr_t addr, void* buffer, size_t size)
+/* 
+ * 软件页表遍历 - 最原始的方式
+ * 不通过内核页表API，直接计算地址
+ */
+static phys_addr_t raw_va_to_pa(unsigned long pgd_base, uintptr_t va)
+{
+	unsigned long pgd_idx, p4d_idx, pud_idx, pmd_idx, pte_idx;
+	unsigned long pgd_addr, p4d_addr, pud_addr, pmd_addr, pte_addr;
+	unsigned long pgd_val, p4d_val, pud_val, pmd_val, pte_val;
+	unsigned long pfn;
+
+	/* 计算各级页表索引 */
+	pgd_idx = (va >> 39) & 0x1FF;
+	p4d_idx = (va >> 30) & 0x1FF;
+	pud_idx = (va >> 21) & 0x1FF;
+	pmd_idx = (va >> 12) & 0x1FF;
+	pte_idx = (va >> 0) & 0x1FF;
+
+	/* 读取 PGD */
+	pgd_addr = pgd_base + pgd_idx * 8;
+	pgd_val = *(unsigned long*)phys_to_virt(pgd_addr);
+	if (!(pgd_val & 1)) return 0;
+
+	/* 读取 P4D (如果支持) */
+#if CONFIG_PGTABLE_LEVELS >= 5
+	p4d_addr = (pgd_val & 0xFFFFFFFFF000) + p4d_idx * 8;
+	p4d_val = *(unsigned long*)phys_to_virt(p4d_addr);
+	if (!(p4d_val & 1)) return 0;
+	pud_addr = (p4d_val & 0xFFFFFFFFF000) + pud_idx * 8;
+#else
+	pud_addr = (pgd_val & 0xFFFFFFFFF000) + pud_idx * 8;
+#endif
+
+	/* 读取 PUD */
+	pud_val = *(unsigned long*)phys_to_virt(pud_addr);
+	if (!(pud_val & 1)) return 0;
+
+	/* 检查是否为 1GB 大页 */
+	if (pud_val & (1 << 7)) {
+		pfn = (pud_val & 0xFFFFFFFFC0000000) >> 12;
+		return (pfn << 12) + (va & 0x3FFFFFFF);
+	}
+
+	/* 读取 PMD */
+	pmd_addr = (pud_val & 0xFFFFFFFFF000) + pmd_idx * 8;
+	pmd_val = *(unsigned long*)phys_to_virt(pmd_addr);
+	if (!(pmd_val & 1)) return 0;
+
+	/* 检查是否为 2MB 大页 */
+	if (pmd_val & (1 << 7)) {
+		pfn = (pmd_val & 0xFFFFFFFFFFE00000) >> 12;
+		return (pfn << 12) + (va & 0x1FFFFF);
+	}
+
+	/* 读取 PTE */
+	pte_addr = (pmd_val & 0xFFFFFFFFF000) + pte_idx * 8;
+	pte_val = *(unsigned long*)phys_to_virt(pte_addr);
+	if (!(pte_val & 1)) return 0;
+
+	pfn = (pte_val & 0xFFFFFFFFF000) >> 12;
+	return (pfn << 12) + (va & 0xFFF);
+}
+
+/*
+ * 直接读取进程内存 - 纯底层实现
+ */
+bool read_process_memory(pid_t pid, uintptr_t addr, void* buffer, size_t size)
 {
 	struct task_struct* task;
 	struct mm_struct* mm;
+	unsigned long pgd_base;
 	phys_addr_t pa;
-	size_t max;
-	size_t count = 0;
+	void* mapped;
+	size_t offset, bytes, total = 0;
 
 	task = pid_task(find_vpid(pid), PIDTYPE_PID);
-	if (!task) {
-		return false;
-	}
+	if (!task) return false;
+	
 	mm = get_task_mm(task);
-	if (!mm) {
-		return false;
-	}
+	if (!mm) return false;
+
+	/* 获取目标进程的页表基地址 */
+	pgd_base = virt_to_phys(mm->pgd);
+
 	while (size > 0) {
-		pa = translate_linear_address(mm, addr);
-		max = min(PAGE_SIZE - (addr & (PAGE_SIZE - 1)), min(size, PAGE_SIZE));
+		offset = addr & (PAGE_SIZE - 1);
+		bytes = min((size_t)(PAGE_SIZE - offset), size);
+
+		/* 直接用原始页表遍历获取物理地址 */
+		pa = raw_va_to_pa(pgd_base, addr);
 		if (!pa) {
-			goto none_phy_addr;
+			mmput(mm);
+			return false;
 		}
-		
-		count = read_physical_address(pa, buffer, max);
-		//printk("[*]pid %d address = %llx  addr %lx   count %zu  size %zu",pid,pa,addr,count,size);
-	none_phy_addr:
-		size -= max;
-		buffer += max;
-		addr += max;
+
+		/* 直接映射物理内存 */
+		mapped = direct_phys_read(pa);
+		if (!mapped) {
+			mmput(mm);
+			return false;
+		}
+
+		/* 直接拷贝数据 */
+		if (copy_to_user(buffer + total, mapped + offset, bytes)) {
+			iounmap(mapped);
+			mmput(mm);
+			return false;
+		}
+
+		iounmap(mapped);
+		total += bytes;
+		addr += bytes;
+		size -= bytes;
 	}
+
 	mmput(mm);
-	return count;
+	return total > 0;
 }
 
+/*
+ * 直接写入进程内存 - 纯底层实现
+ */
 bool write_process_memory(pid_t pid, uintptr_t addr, void* buffer, size_t size)
 {
 	struct task_struct* task;
 	struct mm_struct* mm;
+	unsigned long pgd_base;
 	phys_addr_t pa;
-	bool count = false;
+	void* mapped;
+	size_t offset, bytes, total = 0;
 
 	task = pid_task(find_vpid(pid), PIDTYPE_PID);
-	if (!task) {
-		return false;
-	}
+	if (!task) return false;
+	
 	mm = get_task_mm(task);
-	if (!mm) {
-		return false;
+	if (!mm) return false;
+
+	/* 获取目标进程的页表基地址 */
+	pgd_base = virt_to_phys(mm->pgd);
+
+	while (size > 0) {
+		offset = addr & (PAGE_SIZE - 1);
+		bytes = min((size_t)(PAGE_SIZE - offset), size);
+
+		/* 直接用原始页表遍历获取物理地址 */
+		pa = raw_va_to_pa(pgd_base, addr);
+		if (!pa) {
+			mmput(mm);
+			return false;
+		}
+
+		/* 直接映射物理内存 */
+		mapped = direct_phys_read(pa);
+		if (!mapped) {
+			mmput(mm);
+			return false;
+		}
+
+		/* 直接写入数据 */
+		if (copy_from_user(mapped + offset, buffer + total, bytes)) {
+			iounmap(mapped);
+			mmput(mm);
+			return false;
+		}
+
+		iounmap(mapped);
+		total += bytes;
+		addr += bytes;
+		size -= bytes;
 	}
-	pa = translate_linear_address(mm, addr);
-	if (!pa) {
-		goto none_phy_addr;
-	}
-	count = write_physical_address(pa,buffer,size);
-	none_phy_addr:
-		mmput(mm);
-	return count;
+
+	mmput(mm);
+	return total > 0;
 }
-// 作用：远程替换进程里的目标函数为你的hook函数
- 
