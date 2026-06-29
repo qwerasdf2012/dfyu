@@ -17,6 +17,7 @@ typedef struct _MODULE_BASE {
 } MODULE_BASE, *PMODULE_BASE;
 
 enum OPERATIONS {
+    OP_INIT_KEY = 0x800,
     OP_READ_MEM = 0x801,
     OP_WRITE_MEM = 0x802,
     OP_MODULE_BASE = 0x803,
@@ -40,5 +41,5 @@ char* get_rand_str(void)
 	return string;
 }
 
-int dispatch_open(struct inode *node, struct file *file);
-int dispatch_close(struct inode *node, struct file *file);
+static int dispatch_open(struct inode *node, struct file *file);
+static int dispatch_close(struct inode *node, struct file *file);
