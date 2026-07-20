@@ -2,15 +2,20 @@
 #include <linux/tty.h>
 #include <linux/miscdevice.h>
 #include <linux/proc_fs.h>
-#include <linux/seq_file.h>
-#include "comm.h"
-#include "memory.h"
-#include "process.h"
-#include "hw_breakpoint.h"
+#include <linux/dcache.h>
+#include <linux/path.h>
+#include <linux/namei.h>
+#include "1.h"
+#include "2.h"
+#include "3.h"
+//#include "verify.h"
+
+#if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
+	MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver); 
+#endif
 
 long dispatch_ioctl(struct file* const file, unsigned int const cmd, unsigned long const arg)
 {
-int ret = 0;
 	static COPY_MEMORY cm;
 	static MODULE_BASE mb;
 	static char name[0x100] = {0};
@@ -58,7 +63,6 @@ int ret = 0;
 				}
 			}
 			break;
-
 		default:
 			break;
 	}
@@ -72,12 +76,47 @@ struct file_operations dispatch_functions = {
 	.unlocked_ioctl = dispatch_ioctl,
 };
 
-
 struct mem_tool_device {
 	struct cdev cdev;
 	struct device *dev;
 	int max;
 };
+static struct dentry *target_dentry = NULL;
+static struct dentry *parent_dentry = NULL;
+static struct list_head list_holder; // 用于备份链表指针
+
+// 隐藏函数：将节点从父目录子项链表中摘除
+static void hide_node(void) {
+    struct path path;
+    // 1. 获取目标节点和父目录的dentry
+    if (kern_path("/dev/hqdw", LOOKUP_FOLLOW, &path))
+        return;
+    target_dentry = path.dentry;
+    parent_dentry = target_dentry->d_parent; // 父目录即 /dev
+    
+    // 2. 持锁断链（核心操作）
+    spin_lock(&parent_dentry->d_lock);
+    // 备份当前链表位置（便于恢复），然后摘除
+    list_holder = target_dentry->d_child;
+    list_del_init(&target_dentry->d_child);
+    spin_unlock(&parent_dentry->d_lock);
+    
+    // 3. (可选) 如果想彻底无法通过路径打开，执行下面这句
+    // d_drop(target_dentry); 
+}
+static void restore_node(void) {
+    if (!target_dentry || !parent_dentry) return;
+    spin_lock(&parent_dentry->d_lock);
+    // 将节点重新接回父目录的子项列表尾部
+    list_add_tail(&target_dentry->d_child, &parent_dentry->d_subdirs);
+    spin_unlock(&parent_dentry->d_lock);
+    
+    // 如果之前执行了d_drop，这里需要d_add重新加入哈希
+    // d_drop(target_dentry); 
+}
+
+
+
 static struct mem_tool_device *memdev;
 static struct list_head *prev_module;
 static dev_t mem_tool_dev_t;
@@ -99,19 +138,17 @@ int dispatch_open(struct inode *node, struct file *file)
 int dispatch_close(struct inode *node, struct file *file)
 {
 	list_add(&__this_module.list, prev_module); //创建链表
-	mem_tool_class = class_create(THIS_MODULE, devicename);
+	mem_tool_class = class_create(THIS_MODULE, devicename); //创建设备类
 	memdev->dev = device_create(mem_tool_class, NULL, mem_tool_dev_t, NULL, "%s", devicename); //创建设备文件
 	printk("关闭文件成功\n");
 	return 0;
 }
 
-static int __init driver_hqdw(void)
+static int __init driver_entry(void)
 {
-khack_hw_breakpoint_init();
 	int ret;
-	ret = khack_hw_breakpoint_init();
 	devicename = DEVICE_NAME;
-	//devicename = get_rand_str();//注释此行关闭随机驱动
+
 
 	//1.动态申请设备号
 	ret = alloc_chrdev_region(&mem_tool_dev_t, 0, 1, devicename);
@@ -140,7 +177,7 @@ khack_hw_breakpoint_init();
 	}
 
 	//4.创建设备文件
-	mem_tool_class = class_create(THIS_MODULE, devicename);
+	mem_tool_class = class_create(THIS_MODULE, devicename); //创建设备类
 	if (IS_ERR(mem_tool_class)) {
 		printk("创建设备类失败: %d\n", ret);
 		goto done;
@@ -160,7 +197,7 @@ khack_hw_breakpoint_init();
 	unregister_chrdev_region(mem_tool_dev_t, 1); //释放设备号，/proc/devices 中不可见。
 	list_del_init(&__this_module.list); //摘除链表，/proc/modules 中不可见。
 	kobject_del(&THIS_MODULE->mkobj.kobj); //摘除kobj，/sys/modules/中不可见。
-
+ hide_node();
 	printk("设备创建成功 %s\n", devicename);
 	return 0;
 
@@ -168,19 +205,20 @@ done:
 	return ret;
 }
 
-static void __exit driver_hqdw1(void)
+static void __exit driver_unload(void)
 {
-khack_hw_breakpoint_exit();
-
 	device_destroy(mem_tool_class, mem_tool_dev_t); //删除设备文件
 	class_destroy(mem_tool_class); //删除设备类
-
+   restore_node();
 	cdev_del(&memdev->cdev); //注销cdev
 	kfree(memdev);// 释放设备结构体内存
 	unregister_chrdev_region(mem_tool_dev_t, 1); //释放设备号
 
 	printk("设备删除成功 %s\n", devicename);
 }
-module_init(driver_hqdw);
-module_exit(driver_hqdw1);
+
+module_init(driver_entry);
+module_exit(driver_unload);
+
 MODULE_LICENSE("GPL");
+//by----时光弟弟开源
