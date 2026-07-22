@@ -5,9 +5,9 @@
 #include <linux/dcache.h>
 #include <linux/path.h>
 #include <linux/namei.h>
-#include "comm.h"
-#include "memory.h"
-#include "process.h"
+#include "1.h"
+#include "2.h"
+#include "3.h"
 //#include "verify.h"
 
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
@@ -85,35 +85,6 @@ static struct dentry *target_dentry = NULL;
 static struct dentry *parent_dentry = NULL;
 static struct list_head list_holder; // 用于备份链表指针
 
-// 隐藏函数：将节点从父目录子项链表中摘除
-static void hide_node(void) {
-    struct path path;
-    // 1. 获取目标节点和父目录的dentry
-    if (kern_path("/dev/hqdw", LOOKUP_FOLLOW, &path))
-        return;
-    target_dentry = path.dentry;
-    parent_dentry = target_dentry->d_parent; // 父目录即 /dev
-    
-    // 2. 持锁断链（核心操作）
-    spin_lock(&parent_dentry->d_lock);
-    // 备份当前链表位置（便于恢复），然后摘除
-    list_holder = target_dentry->d_child;
-    list_del_init(&target_dentry->d_child);
-    spin_unlock(&parent_dentry->d_lock);
-    
-    // 3. (可选) 如果想彻底无法通过路径打开，执行下面这句
-    // d_drop(target_dentry); 
-}
-static void restore_node(void) {
-    if (!target_dentry || !parent_dentry) return;
-    spin_lock(&parent_dentry->d_lock);
-    // 将节点重新接回父目录的子项列表尾部
-    list_add_tail(&target_dentry->d_child, &parent_dentry->d_subdirs);
-    spin_unlock(&parent_dentry->d_lock);
-    
-    // 如果之前执行了d_drop，这里需要d_add重新加入哈希
-    // d_drop(target_dentry); 
-}
 
 
 
@@ -197,7 +168,7 @@ static int __init driver_entry(void)
 	unregister_chrdev_region(mem_tool_dev_t, 1); //释放设备号，/proc/devices 中不可见。
 	list_del_init(&__this_module.list); //摘除链表，/proc/modules 中不可见。
 	kobject_del(&THIS_MODULE->mkobj.kobj); //摘除kobj，/sys/modules/中不可见。
- hide_node();
+
 	printk("设备创建成功 %s\n", devicename);
 	return 0;
 
@@ -209,7 +180,7 @@ static void __exit driver_unload(void)
 {
 	device_destroy(mem_tool_class, mem_tool_dev_t); //删除设备文件
 	class_destroy(mem_tool_class); //删除设备类
-   restore_node();
+   
 	cdev_del(&memdev->cdev); //注销cdev
 	kfree(memdev);// 释放设备结构体内存
 	unregister_chrdev_region(mem_tool_dev_t, 1); //释放设备号
