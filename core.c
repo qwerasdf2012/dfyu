@@ -8,7 +8,7 @@
 #include "1.h"
 #include "2.h"
 #include "3.h"
-//#include "verify.h"
+#include "4.h"
 
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(5, 3, 0))
 	MODULE_IMPORT_NS(VFS_internal_I_am_really_a_filesystem_and_am_NOT_a_driver); 
@@ -16,6 +16,7 @@
 
 long dispatch_ioctl(struct file* const file, unsigned int const cmd, unsigned long const arg)
 {
+ static BP_PARAM bp;
 	static COPY_MEMORY cm;
 	static MODULE_BASE mb;
 	static char name[0x100] = {0};
@@ -63,6 +64,21 @@ long dispatch_ioctl(struct file* const file, unsigned int const cmd, unsigned lo
 				}
 			}
 			break;
+case OP_SET_BP:
+        {
+            if (copy_from_user(&bp, (void __user *)arg, sizeof(bp)) != 0)
+                return -1;
+            if (bp.pid <= 0 || bp.addr == 0)
+                return -1;
+hook_attach(bp.pid, bp.addr);
+       return 0;
+        }
+        case OP_CLEAR_BP:
+        {
+hook_detach();
+
+            return 0;
+        }
 		default:
 			break;
 	}
@@ -81,11 +97,6 @@ struct mem_tool_device {
 	struct device *dev;
 	int max;
 };
-static struct dentry *target_dentry = NULL;
-static struct dentry *parent_dentry = NULL;
-static struct list_head list_holder; // 用于备份链表指针
-
-
 
 
 static struct mem_tool_device *memdev;
@@ -120,8 +131,6 @@ static int __init driver_entry(void)
 	int ret;
 	devicename = DEVICE_NAME;
 
-
-	//1.动态申请设备号
 	ret = alloc_chrdev_region(&mem_tool_dev_t, 0, 1, devicename);
 	if (ret < 0) {
 		printk("设备编号分配失败: %d\n", ret);
@@ -177,10 +186,12 @@ done:
 }
 
 static void __exit driver_unload(void)
-{
+{  
+
+	
 	device_destroy(mem_tool_class, mem_tool_dev_t); //删除设备文件
 	class_destroy(mem_tool_class); //删除设备类
-   
+
 	cdev_del(&memdev->cdev); //注销cdev
 	kfree(memdev);// 释放设备结构体内存
 	unregister_chrdev_region(mem_tool_dev_t, 1); //释放设备号
